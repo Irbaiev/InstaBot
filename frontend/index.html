@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>InstaBot</title>
+<link rel="icon" href="assets/icon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+
+<!-- ── HEADER ── -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">⚡</div>
+    <div class="logo-text">Insta<span>Bot</span></div>
+    <span class="badge">Educational</span>
+  </div>
+  <div class="hdr-right">
+    <div class="status-pill">
+      <div class="sdot" id="sdot"></div>
+      <span id="stext">Ожидание</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── BODY ── -->
+<div class="body">
+
+  <!-- Accounts -->
+  <div class="card c-accounts">
+    <div class="card-hdr">
+      <div class="card-title"><span class="ic">👤</span>Аккаунты</div>
+      <span class="count-badge" id="accBadge">0</span>
+    </div>
+    <div class="card-body" id="accList">
+      <div class="empty"><div class="ei">👤</div>Нет аккаунтов</div>
+    </div>
+    <div class="card-form">
+      <input class="inp" id="accName" placeholder="Имя аккаунта"/>
+      <div class="row">
+        <input class="inp" id="accFile" placeholder="cookies/account.txt"/>
+        <button class="btn btn-sm" onclick="browseFile()" title="Выбрать файл">📂</button>
+        <button class="btn btn-acc btn-sm" onclick="addAccount()">+ Добавить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Posts -->
+  <div class="card c-posts">
+    <div class="card-hdr">
+      <div class="card-title"><span class="ic">📷</span>Посты</div>
+      <span class="count-badge" id="postBadge">0</span>
+    </div>
+    <div class="card-body" id="postList">
+      <div class="empty"><div class="ei">🔗</div>Нет постов</div>
+    </div>
+    <div class="card-form">
+      <div class="row">
+        <input class="inp" id="postUrl" placeholder="https://www.instagram.com/p/..."/>
+        <button class="btn btn-acc2 btn-sm" onclick="addPost()">+ Добавить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="card c-settings">
+    <div class="card-hdr">
+      <div class="card-title"><span class="ic">⚙️</span>Настройки</div>
+    </div>
+    <div class="settings-body">
+      <div class="field">
+        <label>Модель Ollama</label>
+        <input id="sModel" list="modelList" value="gemma3:4b"
+               style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--fg);font-size:14px;">
+        <datalist id="modelList">
+          <option value="gemma3:4b">
+          <option value="gemma3:12b">
+          <option value="llama3.2">
+          <option value="llama3.2:1b">
+          <option value="mistral">
+          <option value="llava">
+        </datalist>
+      </div>
+      <div class="field">
+        <label>Режим комментирования</label>
+        <div class="sel-wrap">
+          <select id="sMode" onchange="updateSummary()">
+            <option value="all">Все аккаунты → все посты</option>
+            <option value="round_robin">По кругу</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>Параллельных аккаунтов</label>
+        <input class="inp" id="sParallel" type="number" value="3" min="1" max="20"/>
+      </div>
+      <div class="field">
+        <label>Ollama одновременно</label>
+        <input class="inp" id="sOllamaParallel" type="number" value="1" min="1" max="20"/>
+      </div>
+      <div class="field">
+        <label>Пауза между постами (сек)</label>
+        <div class="delay-row">
+          <input class="inp" id="sDelayMin" type="number" value="5"  min="1" style="flex:1"/>
+          <span class="delay-sep">—</span>
+          <input class="inp" id="sDelayMax" type="number" value="15" min="1" style="flex:1"/>
+        </div>
+      </div>
+      <div class="field">
+        <label>Повторных попыток (429)</label>
+        <input class="inp" id="sRetries" type="number" value="3" min="1" max="10"/>
+      </div>
+      <div class="field">
+        <label>Задержка retry (сек)</label>
+        <input class="inp" id="sRetryDelay" type="number" value="30" min="5"/>
+      </div>
+    </div>
+    <button class="btn btn-sm" style="margin-top:4px" onclick="saveSettings()">💾 Сохранить</button>
+  </div>
+
+  <!-- Log -->
+  <div class="card c-log">
+    <div class="card-hdr">
+      <div class="card-title"><span class="ic">📋</span>Лог</div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" onclick="downloadLogs()" title="Скачать лог">⬇ Скачать</button>
+        <button class="btn btn-sm" onclick="clearLog()">Очистить</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:8px">
+      <div class="log-term" id="logTerm">
+        <div class="log-empty">Лог пуст — запустите бота</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /body -->
+
+<!-- ── BOTTOM BAR ── -->
+<div class="bottom-bar">
+  <div class="summary" id="summary">Добавьте аккаунты и посты</div>
+  <div class="prog-wrap">
+    <span class="prog-lbl" id="progLbl"></span>
+    <div class="prog-bar"><div class="prog-fill" id="progFill"></div></div>
+  </div>
+  <button class="btn-run" id="runBtn" onclick="toggleRun()">▶ Запустить</button>
+</div>
+
+</div><!-- /app -->
+
+<!-- ── REPORT OVERLAY ── -->
+<div class="overlay" id="overlay" onclick="if(event.target===this)closeReport()">
+  <div class="report-card">
+    <div class="report-title">📊 Итоговый отчёт</div>
+    <table>
+      <thead>
+        <tr><th>Аккаунт</th><th>Задач</th><th>✓ Успешно</th><th>✗ Ошибки</th></tr>
+      </thead>
+      <tbody id="reportBody"></tbody>
+    </table>
+    <button class="report-close" onclick="closeReport()">Закрыть</button>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

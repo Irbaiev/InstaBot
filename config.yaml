@@ -1,0 +1,11 @@
+accounts: []
+posts: []
+settings:
+  delay_max: 12.0
+  delay_min: 3.0
+  max_parallel: 2
+  mode: all
+  model: gemma3:4b
+  ollama_parallel: 1
+  retries: 3
+  retry_delay: 30.0
