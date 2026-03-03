@@ -1,11 +1,19 @@
-accounts: []
-posts: []
+accounts:
+- cookies_file: C:/Users/airba/Downloads/Telegram Desktop/www.instagram.com_cookies
+    (2).txt
+  enabled: true
+  name: Delph
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/www.instagram.com_cookies.txt
+  enabled: false
+  name: Skip
+posts:
+- https://www.instagram.com/p/DU1fuWdDEna/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
 settings:
   delay_max: 12.0
   delay_min: 3.0
   max_parallel: 2
   mode: all
-  model: gemma3:4b
+  model: gemma3:12b
   ollama_parallel: 1
   retries: 3
   retry_delay: 30.0

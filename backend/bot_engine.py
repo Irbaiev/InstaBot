@@ -251,20 +251,29 @@ def fallback_comment(post_info: dict) -> str:
 _VISION_MODELS = {"llava", "llava:7b", "llava:13b", "llava:34b",
                   "moondream", "bakllava", "gemma3:12b", "gemma3:27b"}
 
+_VISION_PREFIXES = ("llava", "moondream", "bakllava", "qwen2-vl", "qwen2.5vl", "minicpm-v")
+
 def _model_has_vision(model: str) -> bool:
-    return any(v in model.lower() for v in ("llava", "moondream", "bakllava")) \
-           or model in _VISION_MODELS
+    m = model.lower()
+    return any(p in m for p in _VISION_PREFIXES) or model in _VISION_MODELS
 
 
-async def _fetch_image_b64(url: str) -> str | None:
-    """Скачивает изображение и возвращает base64-строку."""
+import base64 as _base64
+
+async def _fetch_image_b64(url: str, session=None) -> str | None:
+    """Скачивает изображение и возвращает base64-строку.
+    Если передана session — использует её (с куками Instagram).
+    """
     try:
-        async with aiohttp.ClientSession() as session:
+        if session is not None:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status == 200:
-                    import base64
-                    data = await r.read()
-                    return base64.b64encode(data).decode()
+                    return _base64.b64encode(await r.read()).decode()
+        else:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status == 200:
+                        return _base64.b64encode(await r.read()).decode()
     except Exception:
         pass
     return None
@@ -291,12 +300,28 @@ async def _ollama_request(model: str, prompt: str,
             raise RuntimeError(f"HTTP {resp.status}: {body[:200]}")
 
 
-_COMMENT_ANGLES = [
-    "задай интересный вопрос автору по теме поста",
-    "поделись коротким личным опытом или ассоциацией с темой",
-    "выскажи своё мнение или удивление конкретной деталью",
-    "сделай наблюдение о чём-то в посте, что тебя зацепило",
-    "отреагируй эмоционально но конкретно — что именно тебя впечатлило и почему",
+_COMMENT_STYLES = [
+    # (подход, длина_фраза, макс_предложений)
+    ("просто коротко отреагируй — как будто увидел в ленте и написал первое что в голову пришло",
+     "1 предложение, максимум 2", 2),
+    ("задай искренний вопрос автору — тебе реально интересно",
+     "1-2 предложения", 2),
+    ("поделись коротким личным опытом или ассоциацией с темой",
+     "2-3 предложения", 3),
+    ("выскажи своё мнение — что конкретно зацепило и почему",
+     "2-3 предложения", 3),
+    ("напиши развёрнутый живой отклик — как будто пишешь другу в комментах",
+     "3-4 предложения", 4),
+    ("сделай наблюдение о детали которую заметил, потом добавь свою реакцию",
+     "2-3 предложения", 3),
+]
+
+_PERSONAS = [
+    "обычный подписчик",
+    "фанат этого блогера",
+    "случайный человек из рекомендаций",
+    "давний подписчик",
+    "человек со схожими интересами",
 ]
 
 
@@ -309,50 +334,40 @@ def _build_prompt(post_info: dict, account_name: str = "") -> str:
     type_ru = {"reel": "видео (Reel)", "igtv": "видео (IGTV)", "photo": "фото"}.get(post_type, "пост")
     tags_str = " ".join(f"#{h}" for h in hashtags[:15]) if hashtags else "нет"
     caption_str = f'"{caption}"' if caption else "(подпись отсутствует)"
-    angle = random.choice(_COMMENT_ANGLES)
-    persona = f"Ты — живой подписчик Instagram{f' (аккаунт {account_name})' if account_name else ''}."
 
-    return f"""{persona} Напиши живой, искренний комментарий под постом.
+    angle, length_hint, _ = random.choice(_COMMENT_STYLES)
+    persona = random.choice(_PERSONAS)
 
-Автор: @{author}
-Тип поста: {type_ru}
+    return f"""Ты — {persona} в Instagram. Пишешь комментарий под постом @{author}.
+
+Пост: {type_ru}
 Подпись: {caption_str}
 Хэштеги: {tags_str}
 
-Твой подход к комментарию: {angle}
+Что делаешь: {angle}
+Длина: {length_hint}
 
-Правила:
-- Пиши на русском языке, разговорным живым стилем
-- 2-4 предложения — развёрнуто, но не многословно
-- Реагируй конкретно на тему (хэштеги — подсказка если подпись пустая)
-- Не используй хэштеги в самом комментарии
-- Не пиши банальщину: "круто", "огонь", "класс", "топ", "нравится"
-- Максимум 1-2 эмодзи, и только если уместно
-- Не представляйся и не объясняй — просто напиши комментарий
+Пиши по-русски, живым разговорным языком. Без хэштегов в тексте. Без банальщины ("круто", "огонь", "класс", "топ"). Эмодзи — только если сам бы поставил, не больше одного. Не объясняй — просто напиши комментарий.
 
 Комментарий:"""
 
 
 async def generate_comment(post_info: dict, model: str,
-                           account_name: str = "") -> tuple[str, str]:
+                           account_name: str = "",
+                           image_b64: str | None = None) -> tuple[str, str]:
     """Возвращает (текст_комментария, источник) где источник: 'ollama' | 'fallback'."""
     if not AIOHTTP_OK:
         return fallback_comment(post_info), "fallback"
+    _, _, max_sentences = random.choice(_COMMENT_STYLES)
     prompt = _build_prompt(post_info, account_name)
     try:
-        image_b64 = None
-        thumbnail_url = post_info.get("thumbnail_url", "")
-        if thumbnail_url and _model_has_vision(model):
-            image_b64 = await _fetch_image_b64(thumbnail_url)
-
         async with _get_ollama_sem():
             text = await _ollama_request(model, prompt, image_b64=image_b64)
         text = text.strip().strip("\"'«»")
-        # Берём не более 4 предложений
         sentences = re.split(r'(?<=[.!?])\s+', text)
-        text = " ".join(sentences[:4]).strip()
-        if len(text) > 700:
-            text = text[:697] + "..."
+        text = " ".join(sentences[:max_sentences]).strip()
+        if len(text) > 1500:
+            text = text[:1497] + "..."
         return text, "ollama"
     except Exception as e:
         make_file_logger("system").warning(f"Ollama error (model={model}): {e}")
@@ -559,7 +574,17 @@ async def account_worker(account: Account, posts: list[Post],
                 tags_hint = " ".join(f"#{h}" for h in info.get("hashtags", [])[:5])
                 bot.push_log(acc,
                     f"@{info['author']} · {info.get('post_type','photo')} · {tags_hint or 'нет тегов'}")
-                comment, src = await generate_comment(info, settings.model, acc)
+
+                # Скачиваем thumbnail через авторизованную сессию (иначе Instagram даёт 403)
+                image_b64 = None
+                if info.get("thumbnail_url") and _model_has_vision(settings.model):
+                    image_b64 = await _fetch_image_b64(info["thumbnail_url"], session)
+                    if image_b64:
+                        bot.push_log(acc, "Изображение загружено ✓ (vision)", "info")
+                    else:
+                        bot.push_log(acc, "Изображение недоступно — только текст", "warn")
+
+                comment, src = await generate_comment(info, settings.model, acc, image_b64)
                 bot.push_log(acc, f"Комментарий [{src}]: «{comment}»")
 
                 ok = await send_comment(
