@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from backend.bot_engine import (
     Account, BotSettings, Post,
-    bot, start_bot, stop_bot, save_state,
+    bot, start_bot, stop_bot, save_state, start_stress_test,
 )
 from backend.config import VERSION
 
@@ -40,6 +40,12 @@ class RunIn(BaseModel):
     retries: int         = 3
     retry_delay: float   = 30.0
     mode: str            = "all"
+
+
+class StressTestIn(BaseModel):
+    num_accounts: int = 10
+    num_posts: int    = 5
+    max_parallel: int = 5
 
 
 # ── Health / meta ────────────────────────────────────────────────────
@@ -189,6 +195,18 @@ async def run(body: RunIn):
 @router.post("/stop")
 async def stop():
     stop_bot()
+    return {"ok": True}
+
+
+@router.post("/stress-test")
+async def stress_test(body: StressTestIn):
+    if bot.running:
+        raise HTTPException(400, "Бот уже запущен")
+    start_stress_test(body.num_accounts, body.num_posts, body.max_parallel)
+    bot.push_log("system",
+        f"Стресс-тест: {body.num_accounts} акк × {body.num_posts} постов, "
+        f"параллельно={body.max_parallel}",
+        "info")
     return {"ok": True}
 
 

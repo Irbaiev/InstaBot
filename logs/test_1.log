@@ -1,0 +1,46 @@
+15:14:40 [INFO] Старт — 10 постов
+15:14:40 [INFO] [TEST] /p/TEST0
+15:14:40 [INFO] ✓ «Огонь! 🔥»
+15:14:40 [INFO] [TEST] /p/TEST1
+15:14:41 [INFO] ✓ «Огонь! 🔥»
+15:14:41 [INFO] [TEST] /p/TEST2
+15:14:41 [INFO] ✓ «Топ контент! ✨»
+15:14:42 [INFO] [TEST] /p/TEST3
+15:14:42 [INFO] ✓ «Класс! 👏»
+15:14:42 [INFO] [TEST] /p/TEST4
+15:14:43 [INFO] ✓ «Нравится!»
+15:14:43 [INFO] [TEST] /p/TEST5
+15:14:43 [INFO] ✓ «Топ контент! ✨»
+15:14:43 [INFO] [TEST] /p/TEST6
+15:14:44 [INFO] ✓ «Нравится!»
+15:14:44 [INFO] [TEST] /p/TEST7
+15:14:45 [INFO] ✗ Simulated 429
+15:14:45 [INFO] [TEST] /p/TEST8
+15:14:45 [INFO] ✓ «Круто!»
+15:14:45 [INFO] [TEST] /p/TEST9
+15:14:46 [INFO] ✓ «Нравится!»
+15:14:46 [INFO] Готово — ✓9 ✗1
+15:18:58 [INFO] Старт — 5 постов
+15:18:58 [INFO] [TEST] /p/TEST0
+15:18:59 [INFO] ✓ «Топ контент! ✨»
+15:18:59 [INFO] [TEST] /p/TEST1
+15:18:59 [INFO] ✓ «Круто!»
+15:19:00 [INFO] [TEST] /p/TEST2
+15:19:00 [INFO] ✓ «Класс! 👏»
+15:19:00 [INFO] [TEST] /p/TEST3
+15:19:01 [INFO] ✓ «Топ контент! ✨»
+15:19:01 [INFO] [TEST] /p/TEST4
+15:19:01 [INFO] ✓ «Круто!»
+15:19:01 [INFO] Готово — ✓5 ✗0
+15:19:51 [INFO] Старт — 5 постов
+15:19:51 [INFO] [TEST] /p/TEST0
+15:19:52 [INFO] ✗ Simulated 429
+15:19:52 [INFO] [TEST] /p/TEST1
+15:19:53 [INFO] ✗ Simulated 429
+15:19:53 [INFO] [TEST] /p/TEST2
+15:19:53 [INFO] ✓ «Круто!»
+15:19:53 [INFO] [TEST] /p/TEST3
+15:19:54 [INFO] ✓ «Нравится!»
+15:19:54 [INFO] [TEST] /p/TEST4
+15:19:54 [INFO] ✓ «Класс! 👏»
+15:19:54 [INFO] Готово — ✓3 ✗2

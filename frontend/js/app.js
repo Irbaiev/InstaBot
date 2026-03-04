@@ -21,6 +21,7 @@ const api = async (method, path, body) => {
 let accounts = [];
 let posts    = [];
 let running  = false;
+let _accHash = '';   // для пропуска лишних перерисовок
 
 // ═══════════════════════════════════════════════════════
 //  Accounts
@@ -55,7 +56,11 @@ async function toggleAccount(name) {
   await loadAccounts();
 }
 
-function renderAccounts() {
+function renderAccounts(force) {
+  const hash = JSON.stringify(accounts);
+  if (!force && hash === _accHash) return;  // данные не изменились — пропускаем
+  _accHash = hash;
+
   const el = qs('#accList');
   qs('#accBadge').textContent = accounts.length;
   if (!accounts.length) {
@@ -177,6 +182,9 @@ function startPolling() {
       if (!s.running && running) {
         setRunning(false);
         stopPolling();
+        let totalOk = 0, totalErr = 0;
+        Object.values(s.results).forEach(r => { totalOk += r.ok; totalErr += r.err; });
+        notifyDone(totalOk, totalErr);
         showReport(s.results);
       }
     } catch {}
@@ -382,9 +390,55 @@ async function loadSettings() {
 }
 
 // ═══════════════════════════════════════════════════════
+//  Notification
+// ═══════════════════════════════════════════════════════
+function notifyDone(totalOk, totalErr) {
+  // Browser notification
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification('InstaBot завершил работу', {
+      body: `✓ ${totalOk} успешно · ✗ ${totalErr} ошибок`,
+      icon: 'assets/icon.ico',
+    });
+  }
+  // Audio beep
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 800; gain.gain.value = 0.3;
+    osc.start(); osc.stop(ctx.currentTime + 0.3);
+  } catch {}
+}
+
+// ═══════════════════════════════════════════════════════
+//  Stress test
+// ═══════════════════════════════════════════════════════
+async function stressTest() {
+  const numAcc = prompt('Количество тестовых аккаунтов:', '10');
+  if (!numAcc) return;
+  const numPosts = prompt('Количество тестовых постов:', '5');
+  if (!numPosts) return;
+  try {
+    await api('POST', '/stress-test', {
+      num_accounts: +numAcc,
+      num_posts:    +numPosts,
+      max_parallel: +qs('#sParallel').value || 5,
+    });
+    setRunning(true);
+    startPolling();
+    await loadAccounts();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ═══════════════════════════════════════════════════════
 //  Init
 // ═══════════════════════════════════════════════════════
 (async () => {
+  // Request notification permission
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
   await loadAccounts();
   await loadPosts();
   await loadSettings();

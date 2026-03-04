@@ -1,0 +1,46 @@
+15:14:46 [INFO] Старт — 10 постов
+15:14:46 [INFO] [TEST] /p/TEST0
+15:14:47 [INFO] ✓ «Нравится!»
+15:14:47 [INFO] [TEST] /p/TEST1
+15:14:47 [INFO] ✓ «Класс! 👏»
+15:14:47 [INFO] [TEST] /p/TEST2
+15:14:48 [INFO] ✗ Simulated 429
+15:14:48 [INFO] [TEST] /p/TEST3
+15:14:48 [INFO] ✓ «Огонь! 🔥»
+15:14:48 [INFO] [TEST] /p/TEST4
+15:14:48 [INFO] ✓ «Нравится!»
+15:14:49 [INFO] [TEST] /p/TEST5
+15:14:49 [INFO] ✓ «Огонь! 🔥»
+15:14:49 [INFO] [TEST] /p/TEST6
+15:14:49 [INFO] ✓ «Огонь! 🔥»
+15:14:50 [INFO] [TEST] /p/TEST7
+15:14:50 [INFO] ✗ Simulated 429
+15:14:50 [INFO] [TEST] /p/TEST8
+15:14:50 [INFO] ✓ «Класс! 👏»
+15:14:51 [INFO] [TEST] /p/TEST9
+15:14:51 [INFO] ✓ «Топ контент! ✨»
+15:14:51 [INFO] Готово — ✓8 ✗2
+15:19:01 [INFO] Старт — 5 постов
+15:19:01 [INFO] [TEST] /p/TEST0
+15:19:02 [INFO] ✗ Simulated 429
+15:19:02 [INFO] [TEST] /p/TEST1
+15:19:02 [INFO] ✓ «Огонь! 🔥»
+15:19:02 [INFO] [TEST] /p/TEST2
+15:19:03 [INFO] ✓ «Класс! 👏»
+15:19:03 [INFO] [TEST] /p/TEST3
+15:19:03 [INFO] ✓ «Класс! 👏»
+15:19:04 [INFO] [TEST] /p/TEST4
+15:19:04 [INFO] ✓ «Нравится!»
+15:19:04 [INFO] Готово — ✓4 ✗1
+15:19:54 [INFO] Старт — 5 постов
+15:19:54 [INFO] [TEST] /p/TEST0
+15:19:54 [INFO] ✓ «Нравится!»
+15:19:55 [INFO] [TEST] /p/TEST1
+15:19:55 [INFO] ✗ Simulated 429
+15:19:55 [INFO] [TEST] /p/TEST2
+15:19:56 [INFO] ✓ «Класс! 👏»
+15:19:56 [INFO] [TEST] /p/TEST3
+15:19:56 [INFO] ✗ Simulated 429
+15:19:57 [INFO] [TEST] /p/TEST4
+15:19:57 [INFO] ✓ «Класс! 👏»
+15:19:57 [INFO] Готово — ✓3 ✗2

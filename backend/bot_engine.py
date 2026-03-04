@@ -4,10 +4,13 @@
 Вся бизнес-логика здесь — UI и API её только запускают.
 """
 import asyncio
+import base64 as _base64
 import logging
 import os
 import random
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -83,6 +86,7 @@ class BotSettings:
     retries: int       = 3
     retry_delay: float = 30.0
     mode: str          = "all"   # all | round_robin
+    stress_test: bool  = False
 
 
 # Ollama семафор — контролирует сколько аккаунтов одновременно генерируют комментарий
@@ -248,34 +252,145 @@ def fallback_comment(post_info: dict) -> str:
     return random.choice(FALLBACK["default"])
 
 
-_VISION_MODELS = {"llava", "llava:7b", "llava:13b", "llava:34b",
-                  "moondream", "bakllava", "gemma3:12b", "gemma3:27b"}
-
 _VISION_PREFIXES = ("llava", "moondream", "bakllava", "qwen2-vl", "qwen2.5vl", "minicpm-v")
 
 def _model_has_vision(model: str) -> bool:
     m = model.lower()
-    return any(p in m for p in _VISION_PREFIXES) or model in _VISION_MODELS
+    # gemma3 4b/12b/27b — все vision, кроме 1b
+    if "gemma3" in m and ":1b" not in m:
+        return True
+    return any(p in m for p in _VISION_PREFIXES)
 
-
-import base64 as _base64
 
 async def _fetch_image_b64(url: str, session=None) -> str | None:
-    """Скачивает изображение и возвращает base64-строку.
-    Если передана session — использует её (с куками Instagram).
-    """
+    """Скачивает изображение и возвращает base64-строку."""
     try:
         if session is not None:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status == 200:
                     return _base64.b64encode(await r.read()).decode()
+                make_file_logger("system").debug(f"Image fetch {r.status}: {url[:80]}")
         else:
             async with aiohttp.ClientSession() as s:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                     if r.status == 200:
                         return _base64.b64encode(await r.read()).decode()
+    except Exception as e:
+        make_file_logger("system").debug(f"Image fetch error: {e}")
+    return None
+
+
+async def _fetch_media_image_url(session, csrf: str, media_id: str) -> str | None:
+    """Получает прямую ссылку на изображение через Instagram media API."""
+    url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
+    headers = {**BASE_HEADERS, "X-CSRFToken": csrf or ""}
+    try:
+        async with session.get(url, headers=headers,
+                               timeout=aiohttp.ClientTimeout(total=10)) as r:
+            if r.status == 200:
+                data = await r.json()
+                items = data.get("items", [])
+                if items:
+                    item = items[0]
+                    # Carousel → первый элемент
+                    carousel = item.get("carousel_media", [])
+                    src = carousel[0] if carousel else item
+                    candidates = src.get("image_versions2", {}).get("candidates", [])
+                    if candidates:
+                        return candidates[0]["url"]
     except Exception:
         pass
+    return None
+
+
+async def _fetch_top_comments(session, csrf: str, media_id: str,
+                              count: int = 8) -> list[str]:
+    """Получает топ-комментарии под постом для контекста в промпте."""
+    url = (f"https://www.instagram.com/api/v1/media/{media_id}/comments/"
+           f"?can_support_threading=true&permalink_enabled=false")
+    headers = {**BASE_HEADERS, "X-CSRFToken": csrf or ""}
+    try:
+        async with session.get(url, headers=headers,
+                               timeout=aiohttp.ClientTimeout(total=10)) as r:
+            if r.status == 200:
+                data = await r.json()
+                comments = data.get("comments", [])
+                return [c["text"] for c in comments[:count] if c.get("text")]
+    except Exception:
+        pass
+    return []
+
+
+async def _fetch_video_url(session, csrf: str, media_id: str) -> str | None:
+    """Получает прямую ссылку на видео через Instagram media API."""
+    url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
+    headers = {**BASE_HEADERS, "X-CSRFToken": csrf or ""}
+    try:
+        async with session.get(url, headers=headers,
+                               timeout=aiohttp.ClientTimeout(total=10)) as r:
+            if r.status == 200:
+                data = await r.json()
+                items = data.get("items", [])
+                if items:
+                    item = items[0]
+                    videos = item.get("video_versions", [])
+                    if videos:
+                        return videos[0]["url"]
+    except Exception:
+        pass
+    return None
+
+
+async def _extract_video_frame(video_url: str, session=None,
+                                seek_sec: float = 2.0) -> str | None:
+    """Скачивает видео и извлекает кадр через ffmpeg. Возвращает base64."""
+    if not shutil.which("ffmpeg"):
+        return None
+    tmp_video = tmp_frame = None
+    try:
+        fd, tmp_video = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        tmp_frame = tmp_video + ".jpg"
+
+        # Скачиваем видео
+        async def _dl(s):
+            async with s.get(video_url,
+                             timeout=aiohttp.ClientTimeout(total=30)) as r:
+                if r.status != 200:
+                    return False
+                with open(tmp_video, "wb") as f:
+                    f.write(await r.read())
+                return True
+
+        if session is not None:
+            if not await _dl(session):
+                return None
+        else:
+            async with aiohttp.ClientSession() as s:
+                if not await _dl(s):
+                    return None
+
+        # Извлекаем кадр: seek → 1 frame
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-ss", str(seek_sec), "-i", tmp_video,
+            "-frames:v", "1", "-q:v", "2", tmp_frame, "-y",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=15.0)
+
+        if os.path.exists(tmp_frame) and os.path.getsize(tmp_frame) > 100:
+            with open(tmp_frame, "rb") as f:
+                return _base64.b64encode(f.read()).decode()
+    except Exception as e:
+        make_file_logger("system").debug(f"Video frame extraction: {e}")
+    finally:
+        for p in (tmp_video, tmp_frame):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
     return None
 
 
@@ -302,54 +417,103 @@ async def _ollama_request(model: str, prompt: str,
 
 _COMMENT_STYLES = [
     # (подход, длина_фраза, макс_предложений)
-    ("просто коротко отреагируй — как будто увидел в ленте и написал первое что в голову пришло",
-     "1 предложение, максимум 2", 2),
-    ("задай искренний вопрос автору — тебе реально интересно",
-     "1-2 предложения", 2),
-    ("поделись коротким личным опытом или ассоциацией с темой",
-     "2-3 предложения", 3),
-    ("выскажи своё мнение — что конкретно зацепило и почему",
-     "2-3 предложения", 3),
-    ("напиши развёрнутый живой отклик — как будто пишешь другу в комментах",
-     "3-4 предложения", 4),
-    ("сделай наблюдение о детали которую заметил, потом добавь свою реакцию",
-     "2-3 предложения", 3),
+    ("просто коротко отреагируй — первое что в голову пришло", "1-2 предложения", 2),
+    ("задай вопрос автору — тебе реально интересно", "1-2 предложения", 2),
+    ("поделись коротким личным опытом по теме", "2-3 предложения", 3),
+    ("выскажи мнение — что зацепило и почему", "2-3 предложения", 3),
+    ("напиши развёрнутый отклик как другу", "3-4 предложения", 4),
+    ("заметь деталь на фото/видео и отреагируй", "2-3 предложения", 3),
 ]
 
 _PERSONAS = [
-    "обычный подписчик",
-    "фанат этого блогера",
-    "случайный человек из рекомендаций",
-    "давний подписчик",
+    "обычный подписчик, листаешь ленту",
+    "давний фанат этого блогера",
+    "случайный человек, пост попался в рекомендациях",
+    "давний подписчик, следишь давно",
     "человек со схожими интересами",
 ]
 
+# Few-shot примеры живых комментариев для обучения модели стилю
+_FEW_SHOT_EXAMPLES = [
+    "ааа ну вот это я понимаю контент",
+    "жиза, у меня так же было на прошлой неделе",
+    "подожди это реально?? я думал фотошоп",
+    "вот это поворот, не ожидал честно",
+    "а где это снято? хочу тоже туда",
+    "ахах точно, знакомое чувство",
+    "слушай а как ты этого добился? реально интересно",
+    "у меня аж мурашки, атмосфера нереальная",
+    "это прям то что мне нужно было сегодня увидеть",
+    "напомнило мне одну историю, расскажу в лс",
+    "ну ты даёшь, я бы так не смог",
+    "кааайф, вот бы так каждый день",
+    "а я как раз думал об этом вчера",
+    "мощно получилось, видно что старался",
+    "о, я тоже такое люблю, понимаю тебя",
+]
 
-def _build_prompt(post_info: dict, account_name: str = "") -> str:
+
+def _build_prompt(post_info: dict, account_name: str = "") -> tuple[str, int]:
+    """Возвращает (prompt, max_sentences)."""
     caption   = post_info.get("caption", "").strip()
     author    = post_info.get("author", "unknown")
     hashtags  = post_info.get("hashtags", [])
     post_type = post_info.get("post_type", "photo")
+    top_comments = post_info.get("top_comments", [])
 
     type_ru = {"reel": "видео (Reel)", "igtv": "видео (IGTV)", "photo": "фото"}.get(post_type, "пост")
     tags_str = " ".join(f"#{h}" for h in hashtags[:15]) if hashtags else "нет"
     caption_str = f'"{caption}"' if caption else "(подпись отсутствует)"
 
-    angle, length_hint, _ = random.choice(_COMMENT_STYLES)
+    angle, length_hint, max_sent = random.choice(_COMMENT_STYLES)
     persona = random.choice(_PERSONAS)
 
-    return f"""Ты — {persona} в Instagram. Пишешь комментарий под постом @{author}.
+    # Берём 3 рандомных few-shot примера
+    examples = random.sample(_FEW_SHOT_EXAMPLES, 3)
+    examples_str = "\n".join(f"- {e}" for e in examples)
+
+    # Контекст: реальные комментарии под постом (показываем до 10 рандомных)
+    comments_block = ""
+    if top_comments:
+        sample = random.sample(top_comments, min(10, len(top_comments)))
+        comments_block = "\nДругие комментарии под этим постом (впишись в стиль):\n" + "\n".join(f"- {c}" for c in sample) + "\n"
+
+    # Визион-инструкция если есть картинка
+    vision_hint = ""
+    if post_info.get("has_image"):
+        vision_hint = (
+            "\nТебе приложено изображение поста. Внимательно посмотри на него:"
+            "\n- Опиши что РЕАЛЬНО видишь на фото (людей, предметы, место, действие)"
+            "\n- Если на фото есть текст — прочитай его и учти в комментарии"
+            "\n- НЕ выдумывай то чего нет на фото"
+            "\n- Реагируй именно на то что изображено, а не на подпись\n"
+        )
+
+    prompt = f"""Ты — {persona}. Пишешь комментарий в Instagram под постом @{author}.
 
 Пост: {type_ru}
 Подпись: {caption_str}
 Хэштеги: {tags_str}
-
-Что делаешь: {angle}
+{comments_block}{vision_hint}
+Задача: {angle}
 Длина: {length_hint}
 
-Пиши по-русски, живым разговорным языком. Без хэштегов в тексте. Без банальщины ("круто", "огонь", "класс", "топ"). Эмодзи — только если сам бы поставил, не больше одного. Не объясняй — просто напиши комментарий.
+Примеры стиля (НЕ копируй, пиши своё):
+{examples_str}
+
+ПРАВИЛА:
+- Пиши по-русски, живым разговорным языком как реальный человек
+- Можно сокращения, можно без точки в конце, можно начать с маленькой буквы
+- НЕ используй слова: круто, огонь, класс, топ, супер, потрясающе, великолепно, замечательно
+- НЕ ставь хэштеги
+- Эмодзи максимум 1 штука и только если реально к месту
+- НЕ начинай с обращения "привет" или "здравствуйте"
+- Пиши как человек который реально залипает в инсту, а не как бот
+- Только текст комментария, без пояснений
 
 Комментарий:"""
+
+    return prompt, max_sent
 
 
 async def generate_comment(post_info: dict, model: str,
@@ -358,12 +522,15 @@ async def generate_comment(post_info: dict, model: str,
     """Возвращает (текст_комментария, источник) где источник: 'ollama' | 'fallback'."""
     if not AIOHTTP_OK:
         return fallback_comment(post_info), "fallback"
-    _, _, max_sentences = random.choice(_COMMENT_STYLES)
-    prompt = _build_prompt(post_info, account_name)
+    prompt, max_sentences = _build_prompt(post_info, account_name)
     try:
         async with _get_ollama_sem():
             text = await _ollama_request(model, prompt, image_b64=image_b64)
         text = text.strip().strip("\"'«»")
+        # Убираем типичные артефакты LLM
+        for prefix in ("Комментарий:", "Comment:", "Ответ:"):
+            if text.lower().startswith(prefix.lower()):
+                text = text[len(prefix):].strip()
         sentences = re.split(r'(?<=[.!?])\s+', text)
         text = " ".join(sentences[:max_sentences]).strip()
         if len(text) > 1500:
@@ -516,6 +683,30 @@ async def account_worker(account: Account, posts: list[Post],
     acc = account.name
     bot.push_log(acc, f"Старт — {len(posts)} постов", "info")
 
+    # ── Stress-test: симуляция без реальных запросов ──
+    if settings.stress_test:
+        for post in posts:
+            if bot.stop_event and bot.stop_event.is_set():
+                break
+            bot.push_log(acc, f"[TEST] /p/{post.shortcode}")
+            await asyncio.sleep(random.uniform(0.2, 0.6))
+            ok = random.random() > 0.1
+            comment = fallback_comment({})
+            if ok:
+                bot.push_log(acc, f'✓ «{comment}»', "ok")
+                result.ok += 1
+            else:
+                bot.push_log(acc, "✗ Simulated 429", "error")
+                result.err += 1
+            result.total += 1
+            bot.progress_done += 1
+            await asyncio.sleep(random.uniform(settings.delay_min * 0.1,
+                                               settings.delay_max * 0.1))
+        account.status = "ok" if result.err == 0 else "error"
+        bot.push_log(acc, f"Готово — ✓{result.ok} ✗{result.err}",
+            "ok" if result.err == 0 else "warn")
+        return
+
     cookies, csrf, uid = load_cookies(account.cookies_file)
     if not cookies:
         bot.push_log(acc, f"Файл куки не найден: {account.cookies_file}", "error")
@@ -575,12 +766,39 @@ async def account_worker(account: Account, posts: list[Post],
                 bot.push_log(acc,
                     f"@{info['author']} · {info.get('post_type','photo')} · {tags_hint or 'нет тегов'}")
 
-                # Скачиваем thumbnail через авторизованную сессию (иначе Instagram даёт 403)
+                # Загружаем топ-комментарии для контекста промпта (до 25 шт)
+                if info.get("media_id"):
+                    top_comments = await _fetch_top_comments(session, csrf, info["media_id"], count=25)
+                    if top_comments:
+                        info["top_comments"] = top_comments
+                        bot.push_log(acc, f"Загружено {len(top_comments)} комментариев для контекста")
+
+                # Загружаем изображение для vision-модели
                 image_b64 = None
-                if info.get("thumbnail_url") and _model_has_vision(settings.model):
-                    image_b64 = await _fetch_image_b64(info["thumbnail_url"], session)
+                img_source = ""
+                if _model_has_vision(settings.model) and info.get("media_id"):
+                    # Для Reels — пробуем извлечь кадр из видео через ffmpeg
+                    if info.get("post_type") == "reel":
+                        video_url = await _fetch_video_url(session, csrf, info["media_id"])
+                        if video_url:
+                            image_b64 = await _extract_video_frame(video_url, session)
+                            if image_b64:
+                                img_source = "видео-кадр (ffmpeg)"
+                    # Обложка через media API
+                    if not image_b64:
+                        media_img_url = await _fetch_media_image_url(session, csrf, info["media_id"])
+                        if media_img_url:
+                            image_b64 = await _fetch_image_b64(media_img_url, session)
+                            if image_b64:
+                                img_source = "media API"
+                    # Fallback на og:image
+                    if not image_b64 and info.get("thumbnail_url"):
+                        image_b64 = await _fetch_image_b64(info["thumbnail_url"], session)
+                        if image_b64:
+                            img_source = "og:image"
                     if image_b64:
-                        bot.push_log(acc, "Изображение загружено ✓ (vision)", "info")
+                        info["has_image"] = True
+                        bot.push_log(acc, f"Изображение загружено ✓ ({img_source})", "info")
                     else:
                         bot.push_log(acc, "Изображение недоступно — только текст", "warn")
 
@@ -700,3 +918,64 @@ def stop_bot():
     if bot.stop_event:
         bot.stop_event.set()
     bot.push_log("system", "Остановка по запросу пользователя", "warn")
+
+
+def start_stress_test(num_accounts: int, num_posts: int, max_parallel: int):
+    """Стресс-тест: создаёт фейковые аккаунты и прогоняет симуляцию."""
+    if bot.running:
+        return False
+
+    fake_accounts = [Account(name=f"test_{i+1}", cookies_file="(тест)")
+                     for i in range(num_accounts)]
+    fake_posts = [Post(url=f"https://instagram.com/p/TEST{i}/")
+                  for i in range(num_posts)]
+
+    # Добавляем фейки в UI
+    bot.accounts.extend(fake_accounts)
+
+    settings = BotSettings(
+        max_parallel=max_parallel,
+        delay_min=1.0,
+        delay_max=3.0,
+        stress_test=True,
+    )
+
+    posts_map = assign_posts(fake_accounts, fake_posts, "all")
+    bot.results = {a.name: RunResult(account=a.name) for a in fake_accounts}
+    bot.progress_done = 0
+    bot.progress_total = sum(len(v) for v in posts_map.values())
+    bot.running = True
+    bot.stop_event = asyncio.Event()
+
+    for a in fake_accounts:
+        a.status = "running"
+
+    async def _run():
+        start = asyncio.get_event_loop().time()
+        sem = asyncio.Semaphore(max_parallel)
+
+        async def guarded(acc):
+            async with sem:
+                await account_worker(
+                    acc, posts_map[acc.name],
+                    settings, bot.results[acc.name],
+                )
+
+        await asyncio.gather(*[guarded(a) for a in fake_accounts])
+
+        elapsed = asyncio.get_event_loop().time() - start
+        # Убираем фейковые аккаунты из UI
+        bot.accounts = [a for a in bot.accounts
+                        if not a.name.startswith("test_")]
+
+        bot.running = False
+        total_ok = sum(r.ok for r in bot.results.values())
+        total_err = sum(r.err for r in bot.results.values())
+        bot.push_log("system",
+            f"─── Стресс-тест: {num_accounts} акк × {num_posts} постов = "
+            f"{bot.progress_total} задач за {elapsed:.1f}с ───",
+            "ok")
+
+    loop = asyncio.get_event_loop()
+    bot._task = loop.create_task(_run())
+    return True
