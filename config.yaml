@@ -1,22 +1,28 @@
 accounts:
 - cookies_file: C:/Users/airba/Downloads/Telegram Desktop/www.instagram.com_cookies
     (2).txt
-  enabled: false
+  enabled: true
   name: Delph
 - cookies_file: D:/Dev/Projects/InstaBot/cookies/www.instagram.com_cookies.txt
-  enabled: false
+  enabled: true
   name: Skip
 - cookies_file: D:/Dev/Projects/InstaBot/cookies/new_cookies.txt
   enabled: true
-  name: news acc
+  name: new acc
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/cookie_acc.txt
+  enabled: true
+  name: new acc 2
 posts:
-- https://www.instagram.com/p/DUx_hULCqau/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DU2_GtDjRVt/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DVLS3-bgpmr/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DUdALhUDQZ0/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DVGjE0hDZGb/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
 settings:
   delay_max: 25.0
   delay_min: 10.0
-  max_parallel: 2
+  max_parallel: 4
   mode: all
   model: gemma3:12b
-  ollama_parallel: 1
+  ollama_parallel: 2
   retries: 3
   retry_delay: 30.0

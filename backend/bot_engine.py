@@ -5,6 +5,7 @@
 """
 import asyncio
 import base64 as _base64
+import json
 import logging
 import os
 import random
@@ -12,9 +13,10 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import AsyncIterator
 
-from backend.config import LOGS_DIR, CONFIG_FILE
+from backend.config import BASE_DIR, COOKIES_DIR, LOGS_DIR, CONFIG_FILE
 
 # ── Optional deps ────────────────────────────────────────────────────
 try:
@@ -621,24 +623,90 @@ async def generate_comment(post_info: dict, model: str,
         return fallback_comment(post_info), "fallback"
 
 
+def resolve_cookies_path(filepath: str) -> str | None:
+    raw = (filepath or "").strip().strip("\"'")
+    if not raw:
+        return None
+
+    path = Path(raw).expanduser()
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.extend([
+            BASE_DIR / path,
+            COOKIES_DIR / path,
+            COOKIES_DIR / path.name,
+        ])
+
+    checked = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in checked:
+            continue
+        checked.add(key)
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def load_cookies(filepath: str):
     cookies, csrf, uid = {}, None, None
+    resolved = resolve_cookies_path(filepath)
+    if not resolved:
+        return cookies, csrf, uid
+
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split("\t")
-                if len(parts) >= 7:
-                    name, value = parts[5], parts[6]
-                    cookies[name] = value
-                    if name == "csrftoken":
-                        csrf = value
-                    elif name == "ds_user_id":
-                        uid = value
+        with open(resolved, "r", encoding="utf-8") as f:
+            raw = f.read()
     except FileNotFoundError:
-        pass
+        return cookies, csrf, uid
+    except UnicodeDecodeError:
+        with open(resolved, "r", encoding="utf-8-sig", errors="replace") as f:
+            raw = f.read()
+
+    text = raw.strip()
+    if not text:
+        return cookies, csrf, uid
+
+    # JSON export from browser extensions: [{"name":"...","value":"..."}]
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            data = json.loads(text)
+            json_items = []
+            if isinstance(data, list):
+                json_items = data
+            elif isinstance(data, dict):
+                if isinstance(data.get("cookies"), list):
+                    json_items = data["cookies"]
+                elif isinstance(data.get("Cookies"), list):
+                    json_items = data["Cookies"]
+                else:
+                    for name, value in data.items():
+                        if isinstance(value, str):
+                            cookies[str(name)] = value
+            for item in json_items:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                value = item.get("value")
+                if isinstance(name, str) and isinstance(value, str):
+                    cookies[name] = value
+        except json.JSONDecodeError:
+            pass
+
+    # Netscape export format (.txt)
+    if not cookies:
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            name, value = parts[5], parts[6]
+            cookies[name] = value
+
+    csrf = cookies.get("csrftoken")
+    uid = cookies.get("ds_user_id")
     return cookies, csrf, uid
 
 
