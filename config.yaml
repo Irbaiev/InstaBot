@@ -4,10 +4,13 @@ accounts:
   enabled: false
   name: Delph
 - cookies_file: D:/Dev/Projects/InstaBot/cookies/www.instagram.com_cookies.txt
-  enabled: true
+  enabled: false
   name: Skip
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/new_cookies.txt
+  enabled: true
+  name: news acc
 posts:
-- https://www.instagram.com/p/DUtGkw3DKtk/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DUx_hULCqau/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
 settings:
   delay_max: 25.0
   delay_min: 10.0

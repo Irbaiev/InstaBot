@@ -23,6 +23,13 @@ try:
 except ImportError:
     AIOHTTP_OK = False
 
+try:
+    from PIL import Image as _PILImage
+    import io as _io
+    PIL_OK = True
+except ImportError:
+    PIL_OK = False
+
 OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 
 # ── Logging ──────────────────────────────────────────────────────────
@@ -415,6 +422,72 @@ async def _ollama_request(model: str, prompt: str,
             raise RuntimeError(f"HTTP {resp.status}: {body[:200]}")
 
 
+def _split_image_tiles(image_b64: str) -> list[str]:
+    """Разрезает картинку на 3 горизонтальных тайла с перекрытием 10%.
+    Возвращает список base64-строк. Если PIL недоступен — возвращает [оригинал]."""
+    if not PIL_OK:
+        return [image_b64]
+    try:
+        img = _PILImage.open(_io.BytesIO(_base64.b64decode(image_b64)))
+        w, h = img.size
+        # Для маленьких картинок нарезка бесполезна
+        if h < 400:
+            return [image_b64]
+        overlap = int(h * 0.1)
+        tile_h = h // 3
+        tiles = []
+        for i in range(3):
+            top = max(0, i * tile_h - overlap)
+            bot = min(h, (i + 1) * tile_h + overlap)
+            tile = img.crop((0, top, w, bot))
+            buf = _io.BytesIO()
+            tile.save(buf, format="JPEG", quality=90)
+            tiles.append(_base64.b64encode(buf.getvalue()).decode())
+        return tiles
+    except Exception:
+        return [image_b64]
+
+
+async def _describe_image(model: str, image_b64: str) -> str:
+    """Шаг 1 vision: описание картинки + OCR через тайлы для полноты."""
+    tiles = _split_image_tiles(image_b64)
+
+    if len(tiles) == 1:
+        # Одна картинка (маленькая или нет PIL) — один запрос
+        prompt = (
+            "Внимательно посмотри на это изображение.\n"
+            "1. Опиши коротко что на нём: люди, предметы, место, действие\n"
+            "2. Если на изображении есть ТЕКСТ — прочитай его ПОЛНОСТЬЮ и точно\n"
+            "3. Пиши по-русски, коротко, только факты\n"
+            "Описание:"
+        )
+        return await _ollama_request(model, prompt, image_b64=tiles[0])
+
+    # Мульти-тайл: общее описание + OCR по частям
+    descriptions = []
+
+    # Запрос 1: общее описание по полной картинке
+    general = await _ollama_request(model, (
+        "Опиши коротко что на этом изображении: люди, предметы, место, действие. "
+        "По-русски, только факты."
+    ), image_b64=image_b64)
+    descriptions.append(f"Общее: {general.strip()}")
+
+    # Запросы 2-4: OCR по каждому тайлу
+    labels = ["верхней", "центральной", "нижней"]
+    for i, tile in enumerate(tiles):
+        ocr = await _ollama_request(model, (
+            f"Это {labels[i]} часть изображения. "
+            "Прочитай ВЕСЬ текст который видишь — каждое слово, каждую строку. "
+            "Если текста нет — напиши 'текста нет'. По-русски."
+        ), image_b64=tile)
+        text = ocr.strip()
+        if text.lower() not in ("текста нет", "текста нет.", "нет текста", "нет текста."):
+            descriptions.append(f"Текст ({labels[i]} часть): {text}")
+
+    return "\n".join(descriptions)
+
+
 _COMMENT_STYLES = [
     # (подход, длина_фраза, макс_предложений)
     ("просто коротко отреагируй — первое что в голову пришло", "1-2 предложения", 2),
@@ -478,15 +551,14 @@ def _build_prompt(post_info: dict, account_name: str = "") -> tuple[str, int]:
         sample = random.sample(top_comments, min(10, len(top_comments)))
         comments_block = "\nДругие комментарии под этим постом (впишись в стиль):\n" + "\n".join(f"- {c}" for c in sample) + "\n"
 
-    # Визион-инструкция если есть картинка
+    # Описание картинки (заполняется на шаге 1 — _describe_image)
     vision_hint = ""
-    if post_info.get("has_image"):
+    img_desc = post_info.get("image_description", "")
+    if img_desc:
         vision_hint = (
-            "\nТебе приложено изображение поста. Внимательно посмотри на него:"
-            "\n- Опиши что РЕАЛЬНО видишь на фото (людей, предметы, место, действие)"
-            "\n- Если на фото есть текст — прочитай его и учти в комментарии"
-            "\n- НЕ выдумывай то чего нет на фото"
-            "\n- Реагируй именно на то что изображено, а не на подпись\n"
+            f"\nОписание изображения поста (что реально видно на фото/видео):\n"
+            f"{img_desc}\n"
+            f"\nРеагируй на то что изображено. Если на фото есть текст — учти его.\n"
         )
 
     prompt = f"""Ты — {persona}. Пишешь комментарий в Instagram под постом @{author}.
@@ -522,10 +594,18 @@ async def generate_comment(post_info: dict, model: str,
     """Возвращает (текст_комментария, источник) где источник: 'ollama' | 'fallback'."""
     if not AIOHTTP_OK:
         return fallback_comment(post_info), "fallback"
-    prompt, max_sentences = _build_prompt(post_info, account_name)
     try:
+        # Шаг 1: если есть картинка — отдельный запрос на описание + OCR
+        if image_b64:
+            async with _get_ollama_sem():
+                description = await _describe_image(model, image_b64)
+            post_info["image_description"] = description.strip()
+            make_file_logger("system").debug(f"Vision description: {description[:200]}")
+
+        # Шаг 2: генерация комментария (уже без картинки, по описанию)
+        prompt, max_sentences = _build_prompt(post_info, account_name)
         async with _get_ollama_sem():
-            text = await _ollama_request(model, prompt, image_b64=image_b64)
+            text = await _ollama_request(model, prompt)
         text = text.strip().strip("\"'«»")
         # Убираем типичные артефакты LLM
         for prefix in ("Комментарий:", "Comment:", "Ответ:"):
