@@ -1,28 +1,51 @@
 accounts:
-- cookies_file: C:/Users/airba/Downloads/Telegram Desktop/www.instagram.com_cookies
-    (2).txt
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/betty.wood39803.txt
   enabled: true
-  name: Delph
-- cookies_file: D:/Dev/Projects/InstaBot/cookies/www.instagram.com_cookies.txt
+  name: betty.wood
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/chaimodomdzti.txt
   enabled: true
-  name: Skip
-- cookies_file: D:/Dev/Projects/InstaBot/cookies/new_cookies.txt
+  name: chaimodomdzti
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/doyleemily5168.txt
   enabled: true
-  name: new acc
-- cookies_file: D:/Dev/Projects/InstaBot/cookies/cookie_acc.txt
+  name: doyleemily5168
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/evelynrao9832.txt
   enabled: true
-  name: new acc 2
+  name: evelynrao9832
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/luke.lopez570.txt
+  enabled: true
+  name: luke.lopez570
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/matthew.bb710.txt
+  enabled: true
+  name: matthew.bb710
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/not.zoe7770.txt
+  enabled: true
+  name: not.zoe7770
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/virginia_gt090.txt
+  enabled: true
+  name: virginia_gt090
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/wade_tll8ab.txt
+  enabled: true
+  name: wade_tll8ab
+- cookies_file: D:/Dev/Projects/InstaBot/cookies/yusufburke199.txt
+  enabled: true
+  name: yusufburke199
 posts:
-- https://www.instagram.com/p/DU2_GtDjRVt/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
-- https://www.instagram.com/p/DVLS3-bgpmr/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
-- https://www.instagram.com/p/DUdALhUDQZ0/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
-- https://www.instagram.com/p/DVGjE0hDZGb/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DUz2lVLDHcI/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DUybCXxCprE/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DUumDaZjPbK/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DU8Gwg5DcQB/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/p/DU7zQSoCBWJ/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/reel/DUsYsXsiFqQ/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/reel/DUoIV3nkqlb/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/reel/DS1JQFpETLC/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/reel/DUgRaHOjPHT/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
+- https://www.instagram.com/reel/DTz295ZDEae/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==
 settings:
   delay_max: 25.0
   delay_min: 10.0
-  max_parallel: 4
+  max_parallel: 10
   mode: all
   model: gemma3:12b
-  ollama_parallel: 2
+  ollama_parallel: 1
   retries: 3
-  retry_delay: 30.0
+  retry_delay: 15.0

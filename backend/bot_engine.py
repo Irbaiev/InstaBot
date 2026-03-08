@@ -289,8 +289,8 @@ async def _fetch_image_b64(url: str, session=None) -> str | None:
     return None
 
 
-async def _fetch_media_image_url(session, csrf: str, media_id: str) -> str | None:
-    """Получает прямую ссылку на изображение через Instagram media API."""
+async def _fetch_media_info(session, csrf: str, media_id: str) -> dict | None:
+    """Один запрос к /media/{id}/info/ — кэшируемый результат для image/video/etc."""
     url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
     headers = {**BASE_HEADERS, "X-CSRFToken": csrf or ""}
     try:
@@ -300,15 +300,23 @@ async def _fetch_media_image_url(session, csrf: str, media_id: str) -> str | Non
                 data = await r.json()
                 items = data.get("items", [])
                 if items:
-                    item = items[0]
-                    # Carousel → первый элемент
-                    carousel = item.get("carousel_media", [])
-                    src = carousel[0] if carousel else item
-                    candidates = src.get("image_versions2", {}).get("candidates", [])
-                    if candidates:
-                        return candidates[0]["url"]
+                    return items[0]
     except Exception:
         pass
+    return None
+
+
+async def _fetch_media_image_url(session, csrf: str, media_id: str,
+                                  _media_item: dict | None = None) -> str | None:
+    """Получает прямую ссылку на изображение. Использует _media_item если передан."""
+    item = _media_item or await _fetch_media_info(session, csrf, media_id)
+    if not item:
+        return None
+    carousel = item.get("carousel_media", [])
+    src = carousel[0] if carousel else item
+    candidates = src.get("image_versions2", {}).get("candidates", [])
+    if candidates:
+        return candidates[0]["url"]
     return None
 
 
@@ -330,23 +338,15 @@ async def _fetch_top_comments(session, csrf: str, media_id: str,
     return []
 
 
-async def _fetch_video_url(session, csrf: str, media_id: str) -> str | None:
-    """Получает прямую ссылку на видео через Instagram media API."""
-    url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
-    headers = {**BASE_HEADERS, "X-CSRFToken": csrf or ""}
-    try:
-        async with session.get(url, headers=headers,
-                               timeout=aiohttp.ClientTimeout(total=10)) as r:
-            if r.status == 200:
-                data = await r.json()
-                items = data.get("items", [])
-                if items:
-                    item = items[0]
-                    videos = item.get("video_versions", [])
-                    if videos:
-                        return videos[0]["url"]
-    except Exception:
-        pass
+async def _fetch_video_url(session, csrf: str, media_id: str,
+                            _media_item: dict | None = None) -> str | None:
+    """Получает прямую ссылку на видео. Использует _media_item если передан."""
+    item = _media_item or await _fetch_media_info(session, csrf, media_id)
+    if not item:
+        return None
+    videos = item.get("video_versions", [])
+    if videos:
+        return videos[0]["url"]
     return None
 
 
@@ -403,91 +403,53 @@ async def _extract_video_frame(video_url: str, session=None,
     return None
 
 
+_ollama_session: aiohttp.ClientSession | None = None
+
+def _get_ollama_session() -> aiohttp.ClientSession:
+    global _ollama_session
+    if _ollama_session is None or _ollama_session.closed:
+        _ollama_session = aiohttp.ClientSession()
+    return _ollama_session
+
+async def _close_ollama_session():
+    global _ollama_session
+    if _ollama_session and not _ollama_session.closed:
+        await _ollama_session.close()
+        _ollama_session = None
+
 async def _ollama_request(model: str, prompt: str,
                           timeout: float = 120.0,
-                          image_b64: str | None = None) -> str:
+                          image_b64: str | None = None,
+                          max_tokens: int = 0) -> str:
     """Прямой HTTP запрос к Ollama API. Возвращает текст или бросает исключение."""
     message: dict = {"role": "user", "content": prompt}
     if image_b64:
         message["images"] = [image_b64]
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            OLLAMA_URL,
-            json={"model": model, "messages": [message], "stream": False,
-                  "options": {"temperature": 0.9, "top_p": 0.95}},
-            timeout=aiohttp.ClientTimeout(total=timeout),
-        ) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data["message"]["content"]
-            body = await resp.text()
-            raise RuntimeError(f"HTTP {resp.status}: {body[:200]}")
-
-
-def _split_image_tiles(image_b64: str) -> list[str]:
-    """Разрезает картинку на 3 горизонтальных тайла с перекрытием 10%.
-    Возвращает список base64-строк. Если PIL недоступен — возвращает [оригинал]."""
-    if not PIL_OK:
-        return [image_b64]
-    try:
-        img = _PILImage.open(_io.BytesIO(_base64.b64decode(image_b64)))
-        w, h = img.size
-        # Для маленьких картинок нарезка бесполезна
-        if h < 400:
-            return [image_b64]
-        overlap = int(h * 0.1)
-        tile_h = h // 3
-        tiles = []
-        for i in range(3):
-            top = max(0, i * tile_h - overlap)
-            bot = min(h, (i + 1) * tile_h + overlap)
-            tile = img.crop((0, top, w, bot))
-            buf = _io.BytesIO()
-            tile.save(buf, format="JPEG", quality=90)
-            tiles.append(_base64.b64encode(buf.getvalue()).decode())
-        return tiles
-    except Exception:
-        return [image_b64]
+    opts: dict = {"temperature": 0.9, "top_p": 0.95}
+    if max_tokens > 0:
+        opts["num_predict"] = max_tokens
+    session = _get_ollama_session()
+    async with session.post(
+        OLLAMA_URL,
+        json={"model": model, "messages": [message], "stream": False,
+              "options": opts},
+        timeout=aiohttp.ClientTimeout(total=timeout),
+    ) as resp:
+        if resp.status == 200:
+            data = await resp.json()
+            return data["message"]["content"]
+        body = await resp.text()
+        raise RuntimeError(f"HTTP {resp.status}: {body[:200]}")
 
 
 async def _describe_image(model: str, image_b64: str) -> str:
-    """Шаг 1 vision: описание картинки + OCR через тайлы для полноты."""
-    tiles = _split_image_tiles(image_b64)
-
-    if len(tiles) == 1:
-        # Одна картинка (маленькая или нет PIL) — один запрос
-        prompt = (
-            "Внимательно посмотри на это изображение.\n"
-            "1. Опиши коротко что на нём: люди, предметы, место, действие\n"
-            "2. Если на изображении есть ТЕКСТ — прочитай его ПОЛНОСТЬЮ и точно\n"
-            "3. Пиши по-русски, коротко, только факты\n"
-            "Описание:"
-        )
-        return await _ollama_request(model, prompt, image_b64=tiles[0])
-
-    # Мульти-тайл: общее описание + OCR по частям
-    descriptions = []
-
-    # Запрос 1: общее описание по полной картинке
-    general = await _ollama_request(model, (
-        "Опиши коротко что на этом изображении: люди, предметы, место, действие. "
-        "По-русски, только факты."
-    ), image_b64=image_b64)
-    descriptions.append(f"Общее: {general.strip()}")
-
-    # Запросы 2-4: OCR по каждому тайлу
-    labels = ["верхней", "центральной", "нижней"]
-    for i, tile in enumerate(tiles):
-        ocr = await _ollama_request(model, (
-            f"Это {labels[i]} часть изображения. "
-            "Прочитай ВЕСЬ текст который видишь — каждое слово, каждую строку. "
-            "Если текста нет — напиши 'текста нет'. По-русски."
-        ), image_b64=tile)
-        text = ocr.strip()
-        if text.lower() not in ("текста нет", "текста нет.", "нет текста", "нет текста."):
-            descriptions.append(f"Текст ({labels[i]} часть): {text}")
-
-    return "\n".join(descriptions)
+    """Один запрос: описание картинки + OCR. Быстро и точно."""
+    return await _ollama_request(model, (
+        "Посмотри на изображение. Коротко:\n"
+        "1) Что изображено (люди, место, действие)\n"
+        "2) Прочитай ВЕСЬ текст на картинке если есть\n"
+        "По-русски, только факты, 2-4 предложения."
+    ), image_b64=image_b64, max_tokens=200)
 
 
 _COMMENT_STYLES = [
@@ -543,49 +505,28 @@ def _build_prompt(post_info: dict, account_name: str = "") -> tuple[str, int]:
     angle, length_hint, max_sent = random.choice(_COMMENT_STYLES)
     persona = random.choice(_PERSONAS)
 
-    # Берём 3 рандомных few-shot примера
-    examples = random.sample(_FEW_SHOT_EXAMPLES, 3)
-    examples_str = "\n".join(f"- {e}" for e in examples)
+    # 2 рандомных few-shot примера (меньше = быстрее)
+    examples = random.sample(_FEW_SHOT_EXAMPLES, 2)
+    examples_str = " | ".join(examples)
 
-    # Контекст: реальные комментарии под постом (показываем до 10 рандомных)
+    # Контекст: реальные комментарии (до 5, коротко)
     comments_block = ""
     if top_comments:
-        sample = random.sample(top_comments, min(10, len(top_comments)))
-        comments_block = "\nДругие комментарии под этим постом (впишись в стиль):\n" + "\n".join(f"- {c}" for c in sample) + "\n"
+        sample = random.sample(top_comments, min(5, len(top_comments)))
+        comments_block = "\nКомменты под постом: " + " | ".join(c[:80] for c in sample) + "\n"
 
     # Описание картинки (заполняется на шаге 1 — _describe_image)
     vision_hint = ""
     img_desc = post_info.get("image_description", "")
     if img_desc:
-        vision_hint = (
-            f"\nОписание изображения поста (что реально видно на фото/видео):\n"
-            f"{img_desc}\n"
-            f"\nРеагируй на то что изображено. Если на фото есть текст — учти его.\n"
-        )
+        vision_hint = f"\nНа фото: {img_desc}\n"
 
-    prompt = f"""Ты — {persona}. Пишешь комментарий в Instagram под постом @{author}.
-
-Пост: {type_ru}
+    prompt = f"""Ты — {persona}. Комментарий под постом @{author} ({type_ru}).
 Подпись: {caption_str}
-Хэштеги: {tags_str}
 {comments_block}{vision_hint}
-Задача: {angle}
-Длина: {length_hint}
-
-Примеры стиля (НЕ копируй, пиши своё):
-{examples_str}
-
-ПРАВИЛА:
-- Пиши по-русски, живым разговорным языком как реальный человек
-- Можно сокращения, можно без точки в конце, можно начать с маленькой буквы
-- НЕ используй слова: круто, огонь, класс, топ, супер, потрясающе, великолепно, замечательно
-- НЕ ставь хэштеги
-- Эмодзи максимум 1 штука и только если реально к месту
-- НЕ начинай с обращения "привет" или "здравствуйте"
-- Пиши как человек который реально залипает в инсту, а не как бот
-- Только текст комментария, без пояснений
-
-Комментарий:"""
+{angle}. {length_hint}.
+Примеры стиля: {examples_str}
+Без хэштегов, без "круто/огонь/класс/топ", макс 1 эмодзи. Живой разговорный русский. Только комментарий:"""
 
     return prompt, max_sent
 
@@ -596,31 +537,39 @@ async def generate_comment(post_info: dict, model: str,
     """Возвращает (текст_комментария, источник) где источник: 'ollama' | 'fallback'."""
     if not AIOHTTP_OK:
         return fallback_comment(post_info), "fallback"
-    try:
-        # Шаг 1: если есть картинка — отдельный запрос на описание + OCR
-        if image_b64:
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
             async with _get_ollama_sem():
-                description = await _describe_image(model, image_b64)
-            post_info["image_description"] = description.strip()
-            make_file_logger("system").debug(f"Vision description: {description[:200]}")
+                # Шаг 1: описание картинки (пропускаем если уже есть из кэша)
+                if image_b64 and not post_info.get("image_description"):
+                    description = await _describe_image(model, image_b64)
+                    post_info["image_description"] = description.strip()
+                    make_file_logger("system").debug(
+                        f"Vision description: {description[:200]}")
 
-        # Шаг 2: генерация комментария (уже без картинки, по описанию)
-        prompt, max_sentences = _build_prompt(post_info, account_name)
-        async with _get_ollama_sem():
-            text = await _ollama_request(model, prompt)
-        text = text.strip().strip("\"'«»")
-        # Убираем типичные артефакты LLM
-        for prefix in ("Комментарий:", "Comment:", "Ответ:"):
-            if text.lower().startswith(prefix.lower()):
-                text = text[len(prefix):].strip()
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        text = " ".join(sentences[:max_sentences]).strip()
-        if len(text) > 1500:
-            text = text[:1497] + "..."
-        return text, "ollama"
-    except Exception as e:
-        make_file_logger("system").warning(f"Ollama error (model={model}): {e}")
-        return fallback_comment(post_info), "fallback"
+                # Шаг 2: генерация комментария (по описанию, без картинки)
+                prompt, max_sentences = _build_prompt(post_info, account_name)
+                text = await _ollama_request(model, prompt, max_tokens=300)
+            text = text.strip().strip("\"'«»")
+            # Убираем типичные артефакты LLM
+            for prefix in ("Комментарий:", "Comment:", "Ответ:"):
+                if text.lower().startswith(prefix.lower()):
+                    text = text[len(prefix):].strip()
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            text = " ".join(sentences[:max_sentences]).strip()
+            if len(text) > 1500:
+                text = text[:1497] + "..."
+            return text, "ollama"
+        except Exception as e:
+            err_str = str(e)
+            if ("503" in err_str or "connect" in err_str.lower()) and attempt < max_retries:
+                make_file_logger("system").info(
+                    f"Ollama 503, ретрай {attempt}/{max_retries} через 10с")
+                await asyncio.sleep(10)
+                continue
+            make_file_logger("system").warning(f"Ollama error (model={model}): {e}")
+            return fallback_comment(post_info), "fallback"
 
 
 def resolve_cookies_path(filepath: str) -> str | None:
@@ -794,7 +743,9 @@ async def get_post_info(session, csrf: str, shortcode: str, post_url: str = "") 
 
 
 async def send_comment(session, csrf: str, media_id: str, text: str,
-                       retries: int = 3, retry_delay: float = 30) -> bool:
+                       retries: int = 3, retry_delay: float = 30,
+                       acc_name: str = "") -> tuple[bool, str]:
+    """Отправляет комментарий. Возвращает (success, reason)."""
     endpoint = f"https://www.instagram.com/api/v1/web/comments/{media_id}/add/"
     headers = {
         **BASE_HEADERS,
@@ -813,21 +764,52 @@ async def send_comment(session, csrf: str, media_id: str, text: str,
             ) as r:
                 if r.status == 200:
                     data = await r.json()
-                    return data.get("status") == "ok" or "comment" in data
+                    if data.get("status") == "ok" or "comment" in data:
+                        return True, "ok"
+                    # Instagram вернул 200 но с ошибкой в теле
+                    msg = data.get("message", str(data)[:200])
+                    return False, f"API: {msg}"
                 elif r.status == 429:
-                    await asyncio.sleep(retry_delay)
+                    if attempt < retries:
+                        make_file_logger(acc_name or "system").info(
+                            f"429 rate limit, ретрай {attempt}/{retries} через {retry_delay}с")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    return False, "429 rate limit (все ретраи)"
                 else:
-                    return False
-        except Exception:
+                    body = await r.text()
+                    # Типичные ошибки Instagram
+                    if r.status == 400:
+                        if "feedback_required" in body:
+                            return False, "feedback_required (временный бан)"
+                        if "commenting is turned off" in body.lower() or \
+                           "comments_disabled" in body or \
+                           "commenting has been turned off" in body.lower():
+                            return False, "comments_disabled"
+                        if "spam" in body.lower():
+                            return False, "spam_detected"
+                    return False, f"HTTP {r.status}: {body[:150]}"
+        except Exception as e:
             if attempt < retries:
                 await asyncio.sleep(5)
-    return False
+            else:
+                return False, f"Exception: {e}"
+    return False, "все ретраи исчерпаны"
+
+
+@dataclass
+class CachedPostData:
+    info: dict = field(default_factory=dict)
+    image_b64: str | None = None
+    img_source: str = ""
+    comments_disabled: bool = False  # если True — все аккаунты пропускают этот пост
 
 
 # ── Per-account worker ───────────────────────────────────────────────
 
 async def account_worker(account: Account, posts: list[Post],
-                         settings: BotSettings, result: RunResult):
+                         settings: BotSettings, result: RunResult,
+                         post_cache: dict[str, CachedPostData] | None = None):
     acc = account.name
     bot.push_log(acc, f"Старт — {len(posts)} постов", "info")
 
@@ -886,7 +868,7 @@ async def account_worker(account: Account, posts: list[Post],
         account.status = "ok" if result.err == 0 else "error"
         return
 
-    # ── Real mode ────────────────────────────────────────────────────
+    # ── Real mode (с использованием кэша пре-фетча) ──────────────
     async with aiohttp.ClientSession() as session:
         for name, val in cookies.items():
             session.cookie_jar.update_cookies({name: val})
@@ -902,10 +884,26 @@ async def account_worker(account: Account, posts: list[Post],
                 break
             bot.push_log(acc, f"Обрабатываю /p/{post.shortcode}")
             try:
-                info = await get_post_info(session, csrf, post.shortcode, post.clean_url)
+                # Используем кэш если есть, иначе фетчим заново
+                cached = post_cache.get(post.shortcode) if post_cache else None
+                if cached and cached.info.get("media_id"):
+                    info = dict(cached.info)  # копия, чтобы не мутировать общий кэш
+                    image_b64 = cached.image_b64
+                else:
+                    # Fallback: загружаем данные напрямую (если кэш пуст)
+                    info = await get_post_info(session, csrf, post.shortcode, post.clean_url)
+                    image_b64 = None
+
                 if not info.get("media_id"):
                     bot.push_log(acc, f"Нет media_id для {post.shortcode}", "error")
                     result.err += 1
+                    result.total += 1
+                    bot.progress_done += 1
+                    continue
+
+                # Пропускаем посты с закрытыми комментариями
+                if cached and cached.comments_disabled:
+                    bot.push_log(acc, f"⊘ Комментарии закрыты — пропускаю", "warn")
                     result.total += 1
                     bot.progress_done += 1
                     continue
@@ -914,55 +912,30 @@ async def account_worker(account: Account, posts: list[Post],
                 bot.push_log(acc,
                     f"@{info['author']} · {info.get('post_type','photo')} · {tags_hint or 'нет тегов'}")
 
-                # Загружаем топ-комментарии для контекста промпта (до 25 шт)
-                if info.get("media_id"):
-                    top_comments = await _fetch_top_comments(session, csrf, info["media_id"], count=25)
-                    if top_comments:
-                        info["top_comments"] = top_comments
-                        bot.push_log(acc, f"Загружено {len(top_comments)} комментариев для контекста")
-
-                # Загружаем изображение для vision-модели
-                image_b64 = None
-                img_source = ""
-                if _model_has_vision(settings.model) and info.get("media_id"):
-                    # Для Reels — пробуем извлечь кадр из видео через ffmpeg
-                    if info.get("post_type") == "reel":
-                        video_url = await _fetch_video_url(session, csrf, info["media_id"])
-                        if video_url:
-                            image_b64 = await _extract_video_frame(video_url, session)
-                            if image_b64:
-                                img_source = "видео-кадр (ffmpeg)"
-                    # Обложка через media API
-                    if not image_b64:
-                        media_img_url = await _fetch_media_image_url(session, csrf, info["media_id"])
-                        if media_img_url:
-                            image_b64 = await _fetch_image_b64(media_img_url, session)
-                            if image_b64:
-                                img_source = "media API"
-                    # Fallback на og:image
-                    if not image_b64 and info.get("thumbnail_url"):
-                        image_b64 = await _fetch_image_b64(info["thumbnail_url"], session)
-                        if image_b64:
-                            img_source = "og:image"
-                    if image_b64:
-                        info["has_image"] = True
-                        bot.push_log(acc, f"Изображение загружено ✓ ({img_source})", "info")
-                    else:
-                        bot.push_log(acc, "Изображение недоступно — только текст", "warn")
-
+                # Генерируем уникальный комментарий (describe уже в кэше)
                 comment, src = await generate_comment(info, settings.model, acc, image_b64)
                 bot.push_log(acc, f"Комментарий [{src}]: «{comment}»")
 
-                ok = await send_comment(
+                ok, reason = await send_comment(
                     session, csrf, info["media_id"], comment,
                     retries=settings.retries,
                     retry_delay=settings.retry_delay,
+                    acc_name=acc,
                 )
                 if ok:
                     bot.push_log(acc, "✓ Отправлен", "ok")
                     result.ok += 1
+                elif "comments_disabled" in reason:
+                    bot.push_log(acc, f"⊘ Комментарии закрыты — пропускаю", "warn")
+                    # Помечаем в кэше, чтобы другие аккаунты не пытались
+                    if cached:
+                        cached.comments_disabled = True
+                elif "feedback_required" in reason:
+                    bot.push_log(acc, f"⚠ Временный бан (feedback_required) — пропускаю оставшиеся посты", "error")
+                    result.err += 1
+                    break  # нет смысла продолжать с этого аккаунта
                 else:
-                    bot.push_log(acc, "✗ Ошибка при отправке", "error")
+                    bot.push_log(acc, f"✗ Ошибка: {reason}", "error")
                     result.err += 1
 
             except Exception as e:
@@ -995,20 +968,165 @@ def assign_posts(accounts: list[Account], posts: list[Post],
     return result
 
 
+# ── Pre-fetch: загрузка данных постов один раз для всех аккаунтов ──
+
+async def _prefetch_single_post(post: Post, session, csrf: str,
+                                 model: str, use_vision: bool) -> CachedPostData:
+    """Загружает всю информацию о посте: info, top_comments, image, description."""
+    cached = CachedPostData()
+    try:
+        info = await get_post_info(session, csrf, post.shortcode, post.clean_url)
+        cached.info = info
+
+        if not info.get("media_id"):
+            return cached
+
+        # Параллельно: top_comments + image
+        tasks = []
+        tasks.append(_fetch_top_comments(session, csrf, info["media_id"], count=10))
+
+        img_coro = None
+        if use_vision:
+            if info.get("post_type") == "reel":
+                img_coro = _prefetch_image_reel(session, csrf, info, post)
+            else:
+                img_coro = _prefetch_image_photo(session, csrf, info)
+
+        if img_coro:
+            tasks.append(img_coro)
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # top_comments
+        if not isinstance(results[0], Exception) and results[0]:
+            info["top_comments"] = results[0]
+
+        # image
+        if len(results) > 1 and not isinstance(results[1], Exception) and results[1]:
+            image_b64, img_source = results[1]
+            cached.image_b64 = image_b64
+            cached.img_source = img_source
+
+        # Fallback og:image
+        if use_vision and not cached.image_b64 and info.get("thumbnail_url"):
+            cached.image_b64 = await _fetch_image_b64(info["thumbnail_url"], session)
+            if cached.image_b64:
+                cached.img_source = "og:image"
+
+        # Vision описание — один раз, результат будет доступен всем аккаунтам
+        if cached.image_b64:
+            info["has_image"] = True
+            try:
+                async with _get_ollama_sem():
+                    description = await _describe_image(model, cached.image_b64)
+                    info["image_description"] = description.strip()
+            except Exception as e:
+                make_file_logger("system").debug(f"Vision describe error: {e}")
+
+    except Exception as e:
+        make_file_logger("system").warning(f"Prefetch error for {post.shortcode}: {e}")
+    return cached
+
+
+async def _prefetch_image_reel(session, csrf, info, post) -> tuple[str, str] | None:
+    # Один запрос к media info — используем для video и fallback image
+    media_item = await _fetch_media_info(session, csrf, info["media_id"])
+    if media_item:
+        video_url = await _fetch_video_url(session, csrf, info["media_id"], _media_item=media_item)
+        if video_url:
+            b64 = await _extract_video_frame(video_url, session)
+            if b64:
+                return b64, "видео-кадр (ffmpeg)"
+        # fallback: image из того же media_item
+        img_url = await _fetch_media_image_url(session, csrf, info["media_id"], _media_item=media_item)
+        if img_url:
+            b64 = await _fetch_image_b64(img_url, session)
+            if b64:
+                return b64, "media API"
+    return None
+
+
+async def _prefetch_image_photo(session, csrf, info) -> tuple[str, str] | None:
+    media_item = await _fetch_media_info(session, csrf, info["media_id"])
+    img_url = await _fetch_media_image_url(session, csrf, info["media_id"], _media_item=media_item)
+    if img_url:
+        b64 = await _fetch_image_b64(img_url, session)
+        if b64:
+            return b64, "media API"
+    return None
+
+
+async def _prefetch_all_posts(posts: list[Post], accounts: list[Account],
+                               model: str) -> dict[str, CachedPostData]:
+    """Загружает данные всех постов один раз. Использует куки первого рабочего аккаунта."""
+    use_vision = _model_has_vision(model) and AIOHTTP_OK
+    cache: dict[str, CachedPostData] = {}
+
+    if not AIOHTTP_OK:
+        return cache
+
+    # Берём куки первого рабочего аккаунта для пре-фетча
+    cookies, csrf, uid = None, None, None
+    for acc in accounts:
+        c, cs, u = load_cookies(acc.cookies_file)
+        if c:
+            cookies, csrf, uid = c, cs, u
+            break
+
+    if not cookies:
+        return cache
+
+    async with aiohttp.ClientSession() as session:
+        for name, val in cookies.items():
+            session.cookie_jar.update_cookies({name: val})
+
+        if not await verify_cookies(session):
+            return cache
+
+        bot.push_log("system", f"Пре-фетч: загрузка данных {len(posts)} постов...", "info")
+
+        # Параллельно загружаем все посты
+        tasks = [_prefetch_single_post(p, session, csrf, model, use_vision) for p in posts]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for post, result in zip(posts, results):
+            if isinstance(result, Exception):
+                bot.push_log("system", f"Ошибка пре-фетча {post.shortcode}: {result}", "error")
+                cache[post.shortcode] = CachedPostData()
+            else:
+                cache[post.shortcode] = result
+                info = result.info
+                if info.get("media_id"):
+                    desc = "с картинкой" if result.image_b64 else "без картинки"
+                    bot.push_log("system",
+                        f"  {post.shortcode}: @{info.get('author','?')} {desc}")
+
+    bot.push_log("system", f"Пре-фетч завершён ✓", "ok")
+    return cache
+
+
 # ── Main runner ──────────────────────────────────────────────────────
 
 async def _warmup_ollama(model: str, timeout: float = 120.0):
-    """Прогревает модель перед стартом: ждёт пока загрузится в память (до timeout сек)."""
+    """Прогревает модель: загружает в память через /api/generate с keep_alive."""
     if not AIOHTTP_OK:
         return
     bot.push_log("system", f"Прогрев модели {model}...", "info")
+    session = _get_ollama_session()
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         try:
-            async with _get_ollama_sem():
-                await _ollama_request(model, "Hi", timeout=30.0)
-            bot.push_log("system", f"Модель {model} готова ✓", "ok")
-            return
+            # Лёгкий запрос — просто загрузить модель в память без генерации
+            async with session.post(
+                "http://127.0.0.1:11434/api/generate",
+                json={"model": model, "prompt": "", "keep_alive": "10m"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as r:
+                if r.status == 200:
+                    bot.push_log("system", f"Модель {model} готова ✓", "ok")
+                    return
+                body = await r.text()
+                raise RuntimeError(f"HTTP {r.status}: {body[:100]}")
         except Exception as e:
             if "503" in str(e) or "connect" in str(e).lower():
                 await asyncio.sleep(5)
@@ -1029,6 +1147,9 @@ async def _run_bot(settings: BotSettings):
     bot.progress_done = 0
     bot.progress_total = sum(len(v) for v in posts_map.values())
 
+    # Пре-фетч: загружаем данные всех постов один раз
+    post_cache = await _prefetch_all_posts(bot.posts, enabled, settings.model)
+
     for a in enabled:
         a.status = "running"
 
@@ -1038,11 +1159,13 @@ async def _run_bot(settings: BotSettings):
         async with sem:
             await account_worker(
                 acc, posts_map[acc.name],
-                settings, bot.results[acc.name]
+                settings, bot.results[acc.name],
+                post_cache=post_cache,
             )
 
     await asyncio.gather(*[guarded(a) for a in enabled])
 
+    await _close_ollama_session()
     bot.running = False
     total_ok  = sum(r.ok  for r in bot.results.values())
     total_err = sum(r.err for r in bot.results.values())
